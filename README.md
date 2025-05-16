@@ -3,6 +3,12 @@
 Computes and ranks code by naturalness captured by CodeBERT.
 
 ![The_CodeBERT-nt workflow](img.png)
+
+## How to use
+```bash
+bash run_docker.sh
+```
+
 ## Conference (QRS-2022): "CodeBERT-nt: code naturalness via CodeBERT" 
 available at: https://doi.org/10.48550/arXiv.2208.06042
 
