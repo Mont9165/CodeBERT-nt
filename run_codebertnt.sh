@@ -6,28 +6,21 @@ if [[ ! -d "$DIR" ]]; then DIR="$PWD"; fi
 ROOT=$DIR
 echo ROOT FOLDER: $ROOT
 
-# path to clone dependencies.
-dependencies_dir=${1}
-if [ -z "$dependencies_dir" ]; then
-  pushd $ROOT/..
-      dependencies_dir="$PWD/cbnt_dependencies"
-  popd
-fi
+# path to dependencies.
+COMMONS_ROOT="$ROOT/commons/"
+CBNT_ROOT="$ROOT/cbnt/"
 
-COMMONS_ROOT="$dependencies_dir/commons/"
-CBNT_ROOT="$dependencies_dir/cbnt/"
-
-# python env.
-pushd $ROOT
-. ./env/bin/activate
-popd
-
-# python path. Not needed if you checked out the dependencies in this same repo, i.e. using the setup.sh script.
+# python path.
 export PYTHONPATH=$COMMONS_ROOT:$CBNT_ROOT:$ROOT:$PYTHONPATH
+
+# JAVA_HOMEの設定
+# export JAVA_HOME=/usr/lib/jvm/temurin-21-jdk-amd64
 
 python3 codebertnt/codebertnt_runner.py \
 -repo_path "$ROOT/test/res/exampleclass/DummyProject" \
 -target_classes src/main/java/example/DummyClass.java \
--java_home /Library/Java/JavaVirtualMachines/jdk1.8.0_261.jdk/Contents/Home/ \
+-java_home "$JAVA_HOME" \
 -output_dir "$ROOT/test/res/output/cbnt_output_dir/" \
+-force_reload "False" \
+-cosine "False"
 
