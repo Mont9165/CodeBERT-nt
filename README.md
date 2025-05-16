@@ -5,8 +5,13 @@ Computes and ranks code by naturalness captured by CodeBERT.
 ![The_CodeBERT-nt workflow](img.png)
 
 ## How to use
+1. environment setup
 ```bash
 bash run_docker.sh
+```
+2. measure code naturalness per line
+```bash
+bash run_codebertnt.sh
 ```
 
 ## Conference (QRS-2022): "CodeBERT-nt: code naturalness via CodeBERT" 
