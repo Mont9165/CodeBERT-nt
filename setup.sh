@@ -10,7 +10,7 @@ echo ROOT FOLDER: $ROOT
 dependencies_dir=${1}
 if [ -z "$dependencies_dir" ]; then
   pushd $ROOT/..
-      dependencies_dir="$PWD/cbnt_dependencies"
+      dependencies_dir="./cbnt_dependencies"
   popd
 fi
 

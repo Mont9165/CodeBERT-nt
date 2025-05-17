@@ -10,7 +10,9 @@ echo ROOT FOLDER: $ROOT
 export PYTHONPATH="$PWD/cbnt_dependencies/commons:$PWD/cbnt_dependencies/cbnt:/app:$PYTHONPATH"
 
 # Set JAVA_HOME to match Java 21
-export JAVA_HOME="/usr/lib/jvm/temurin-21-jdk-arm64/"
+# export JAVA_HOME="/usr/lib/jvm/temurin-21-jdk-arm64/"
+export JAVA_HOME="/usr/lib/jvm/temurin-21-jdk-amd64/"
+
 
 # Run the Python script
 python3 codebertnt/codebertnt_runner.py \
