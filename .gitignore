@@ -7,3 +7,16 @@
 /test/res/output/
 /env/
 /.idea/
+
+refactorings_output.csv
+tasks.list
+pre-trained/
+
+logs/
+slurm_job_*.out
+slurm_job_*.err
+p_log.out
+error/
+
+codebert-nt.sif
+
