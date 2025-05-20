@@ -21,4 +21,4 @@ python3 codebertnt/codebertnt_runner.py \
 -java_home "$JAVA_HOME" \
 -output_dir "$ROOT/test/res/output/cbnt_output_dir/" \
 -force_reload "False" \
--cosine "False"★要変更/確認★
+-cosine "False"

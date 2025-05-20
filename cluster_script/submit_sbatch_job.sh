@@ -1,4 +1,3 @@
-
 #!/bin/bash
 
 # --- SBATCH Directives ---
@@ -17,30 +16,30 @@
 
 # このスクリプト自身の場所を基準にするための設定 (推奨)
 SCRIPT_DIR_SLURM=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-PROJECT_ROOT_DIR="/work/kosei-ho/CodeBERT_naruralness/CodeBERT-nt"
+PROJECT_ROOT_DIR=$(cd "${SCRIPT_DIR_SLURM}/.." && pwd)
 
 # Singularityイメージファイルのパス
-SINGULARITY_IMAGE_PATH="${PROJECT_ROOT_DIR_SLURM}/codebert-nt.sif" # ★要確認/変更★ (プロジェクトルート直下にあると仮定)
+SINGULARITY_IMAGE_PATH="${PROJECT_ROOT_DIR}/codebert-nt.sif" # ★要確認/変更★ (プロジェクトルート直下にあると仮定)
 
 # tasks.list ファイルのパス
-TASK_LIST_FILE="${PROJECT_ROOT_DIR_SLURM}/tasks.list" # ★要確認/変更★
+TASK_LIST_FILE="${PROJECT_ROOT_DIR}/tasks.list" # ★要確認/変更★
 
 # 各タスクがGitリポジトリを一時的にクローン/チェックアウトするためのホスト上のベースディレクトリ
 # 高速なスクラッチディスク領域を推奨 (ユーザーのホームやworkディレクトリ以下に作成)
 HOST_TEMP_WORK_BASE_DIR="/work/kosei-ho/scratch/codebert_temp_work_batch" # ★要確認/変更★
 
 # CodeBERT-nt の最終的な解析結果を保存するホスト上のベースディレクトリ
-HOST_FINAL_OUTPUT_BASE_DIR="${PROJECT_ROOT_DIR_SLURM}/results_batch" # ★要確認/変更★
+HOST_FINAL_OUTPUT_BASE_DIR="${PROJECT_ROOT_DIR}/results_batch" # ★要確認/変更★
 
 # --- コンテナ内パス設定 ---
-CONTAINER_PROJECT_MOUNT_POINT="/work/kosei-ho/CodeBERT_naruralness/CodeBERT-nt/repo"  # クローンされたリポジトリがコンテナ内で見える場所
-CONTAINER_OUTPUT_MOUNT_POINT="/work/kosei-ho/CodeBERT_naruralness/CodeBERT-nt/output" # 出力ディレクトリがコンテナ内で見える場所
+CONTAINER_PROJECT_MOUNT_POINT="/mnt/repo"  # クローンされたリポジトリがコンテナ内で見える場所
+CONTAINER_OUTPUT_MOUNT_POINT="/mnt/output" # 出力ディレクトリがコンテナ内で見える場所
 # Singularityイメージ内の実行スクリプト (run_codebertnt_in_container.sh) のフルパス
-CONTAINER_APP_SCRIPT_PATH="/work/kosei-ho/CodeBERT_naruralness/CodeBERT-nt/cluster_script/run_codebertnt_in_container.sh" # ★イメージ内のパス★
+CONTAINER_APP_SCRIPT_PATH="/app/run_codebertnt_in_container.sh" # ★イメージ内のパス★
 # Singularityイメージ内のJAVA_HOMEパス
 CONTAINER_JAVA_HOME="/usr/lib/jvm/temurin-21-jdk-amd64/" # ★イメージ内のJDKパスに合わせる★
 # Singularityイメージ内のアプリケーションルート (codebertnt_runner.py等の基準)
-CONTAINER_APP_ROOT="/work/kosei-ho/CodeBERT_naruralness/CodeBERT-nt/" # ★イメージ内の構造に合わせる★
+CONTAINER_APP_ROOT="/app" # ★イメージ内の構造に合わせる★
 
 # --- End Configuration ---
 
@@ -50,7 +49,7 @@ echo "SLURM_JOB_ID: ${SLURM_JOB_ID}"
 echo "SLURM_ARRAY_JOB_ID: ${SLURM_ARRAY_JOB_ID}"
 echo "Host: $(hostname)"
 echo "Executing Directory: $(pwd)"
-echo "Project Root (derived): ${PROJECT_ROOT_DIR_SLURM}"
+echo "Project Root (derived): ${PROJECT_ROOT_DIR}"
 echo "Singularity Image: ${SINGULARITY_IMAGE_PATH}"
 echo "Task List File: ${TASK_LIST_FILE}"
 echo "Host Temp Work Base: ${HOST_TEMP_WORK_BASE_DIR}"
@@ -58,13 +57,15 @@ echo "Host Final Output Base: ${HOST_FINAL_OUTPUT_BASE_DIR}"
 echo "----------------------------------------------------"
 
 # ログディレクトリ、出力ベースディレクトリ、一時作業ベースディレクトリの作成
-# sbatch実行時のカレントディレクトリ(PROJECT_ROOT_DIR_SLURMを想定)にlogsディレクトリを作成
-mkdir -p "${PROJECT_ROOT_DIR_SLURM}/logs" \
-         "${HOST_TEMP_WORK_BASE_DIR}" "${HOST_FINAL_OUTPUT_BASE_DIR}"
+# sbatch実行時のカレントディレクトリ(PROJECT_ROOT_DIRを想定)にlogsディレクトリを作成
+mkdir -p "${PROJECT_ROOT_DIR}/logs" \
+         "${PROJECT_ROOT_DIR}/error" \
+         "${HOST_TEMP_WORK_BASE_DIR}" \
+         "${HOST_FINAL_OUTPUT_BASE_DIR}"
+echo "Required host directories checked/created."
 
-# Singularityモジュールのロード (NAISTクラスタの環境に合わせて)
+# Singularityモジュールのロード
 echo "Loading Singularity module..."
-module purge
 module load singularity # ★NAISTクラスタのSingularityバージョンに合わせて変更★
 echo "Singularity called"
 
@@ -103,7 +104,8 @@ echo "Host task final output directory: ${HOST_TASK_FINAL_OUTPUT_DIR}"
 
 # --- Gitリポジトリの準備 ---
 echo "リポジトリ (${REPOSITORY_URL}) を ${HOST_TASK_WORK_DIR} に準備しています..."
-# (安全のため、Git操作前にカレントディレクトリを明示的に設定)
+SBATCH_RUN_DIR=$(pwd) # sbatch実行時のカレントディレクトリを保存 (通常プロジェクトルート)
+
 cd "${HOST_TASK_WORK_DIR}" || { echo "エラー: ${HOST_TASK_WORK_DIR} へのcdに失敗"; exit 1; }
 TEMP_GIT_DIR_NAME=$(basename "${REPOSITORY_URL}" .git)
 ACTUAL_GIT_REPO_PATH_ON_HOST="${HOST_TASK_WORK_DIR}/${TEMP_GIT_DIR_NAME}"
@@ -114,20 +116,24 @@ if [ -n "${REFERENCE_REPO_PATH}" ] && [ -d "${REFERENCE_REPO_PATH}" ]; then
     GIT_CLONE_CMD+=" --reference ${REFERENCE_REPO_PATH} --dissociate"
 fi
 GIT_CLONE_CMD+=" ${REPOSITORY_URL} ${ACTUAL_GIT_REPO_PATH_ON_HOST}"
+echo "Executing Git Clone: ${GIT_CLONE_CMD}"
 eval "${GIT_CLONE_CMD}"
 if [ $? -ne 0 ] || [ ! -d "${ACTUAL_GIT_REPO_PATH_ON_HOST}" ]; then
     echo "エラー: リポジトリ ${REPOSITORY_URL} のクローンに失敗しました。"
-    # cd "${PROJECT_ROOT_DIR}" # 元のディレクトリに戻るか、あるいはここで終了
+    cd "${SBATCH_RUN_DIR}"
     rm -rf "${HOST_TASK_WORK_DIR}"
     exit 1
 fi
-cd "${ACTUAL_GIT_REPO_PATH_ON_HOST}" || { echo "エラー: ${ACTUAL_GIT_REPO_PATH_ON_HOST} へのcdに失敗"; rm -rf "${HOST_TASK_WORK_DIR}"; exit 1; }
+
+cd "${ACTUAL_GIT_REPO_PATH_ON_HOST}" || { echo "エラー: ${ACTUAL_GIT_REPO_PATH_ON_HOST} へのcdに失敗"; cd "${SBATCH_RUN_DIR}"; rm -rf "${HOST_TASK_WORK_DIR}"; exit 1; }
+
+echo "コミット ${COMMIT_ID} をチェックアウトしています..."
 if ! git cat-file -e "${COMMIT_ID}"^{commit} 2>/dev/null; then
     echo "Commit ${COMMIT_ID} not found locally, attempting to fetch..."
-    git fetch --quiet origin "${COMMIT_ID}" || git fetch --quiet
+    git fetch --quiet origin "${COMMIT_ID}" || git fetch --quiet origin --tags || git fetch --quiet
     if ! git cat-file -e "${COMMIT_ID}"^{commit} 2>/dev/null; then
         echo "エラー: コミット ${COMMIT_ID} をfetch後も見つけられません。"
-        # cd "${PROJECT_ROOT_DIR}"
+        cd "${SBATCH_RUN_DIR}"
         rm -rf "${HOST_TASK_WORK_DIR}"
         exit 1
     fi
@@ -135,13 +141,14 @@ fi
 git checkout --quiet "${COMMIT_ID}"
 if [ $? -ne 0 ]; then
     echo "エラー: コミット ${COMMIT_ID} のチェックアウトに失敗しました。"
-    # cd "${PROJECT_ROOT_DIR}"
+    cd "${SBATCH_RUN_DIR}"
     rm -rf "${HOST_TASK_WORK_DIR}"
     exit 1
 fi
 echo "リポジトリの準備が完了しました。"
-# cd "${PROJECT_ROOT_DIR}" # sbatch実行時のカレントディレクトリに戻る (任意)
+cd "${SBATCH_RUN_DIR}" # sbatch実行時のカレントディレクトリに戻る
 # --- Gitリポジトリの準備完了 ---
+
 
 
 # --- Singularityコンテナの実行 ---
