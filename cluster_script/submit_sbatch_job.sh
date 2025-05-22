@@ -2,50 +2,55 @@
 
 # --- SBATCH Directives ---
 #SBATCH --job-name=codebert_nt_batch
-#SBATCH --output=/work/kosei-ho/CodeBERT_naruralness/CodeBERT-nt/logs/slurm_job_output_%A_%a.out    # プロジェクトルート/logs/ に出力
-#SBATCH --error=/work/kosei-ho/CodeBERT_naruralness/CodeBERT-nt/error/slurm_job_error_%A_%a.err     # プロジェクトルート/logs/ に出力 (以前は slurm_errors でしたが logs に統一)
-#SBATCH --array=0-2 # ★重要★ tasks.list の (総行数 - 1) に必ず調整。テスト時は 0-0 や 0-2 など。
-#SBATCH --time=0-10:30:00      # 1タスクあたりの最大実行時間 (例: 30分) - ★要調整★
-#SBATCH --partition=ocigpu1a10_long  # ★重要★ NAISTクラスタの適切な本番用パーティション名に変更 (msas_intr はインタラクティブ用)
+#SBATCH --output=logs/slurm_job_output_%A_%a.out
+#SBATCH --error=error/slurm_job_error_%A_%a.err
+#SBATCH --time=0-1:0:00      # 1タスクあたりの最大実行時間 (例: 30分) - ★要調整★
+#SBATCH --partition=ocigpu1a10_long  
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2      # ★要調整★ codebertnt_runner.py の -max_processes と関連
-#SBATCH --mem=32G               # ★要調整★
+#SBATCH --mem=16G               # ★要調整★
 ##SBATCH --gres=gpu:1          # GPUを使用する場合にコメント解除し、必要なGPU数と種類を指定
 
 # --- Configuration (このセクションのパスや設定を必ずご自身の環境に合わせてください) ---
 
 # このスクリプト自身の場所を基準にするための設定 (推奨)
-SCRIPT_DIR_SLURM=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-PROJECT_ROOT_DIR=$(cd "${SCRIPT_DIR_SLURM}/.." && pwd)
+PROJECT_ROOT_DIR="/work/kosei-ho/CodeBERT_naruralness/CodeBERT-nt"
 
 # Singularityイメージファイルのパス
 SINGULARITY_IMAGE_PATH="${PROJECT_ROOT_DIR}/codebert-nt.sif" # ★要確認/変更★ (プロジェクトルート直下にあると仮定)
+
+if [ -z "${MY_CURRENT_TASK_LIST_FILE}" ]; then
+    echo "エラー: 環境変数 MY_CURRENT_TASK_LIST_FILE が設定されていません。ラッパースクリプトから実行してください。"
+    exit 1
+fi
+TASK_LIST_FILE="${MY_CURRENT_TASK_LIST_FILE}"
 
 # tasks.list ファイルのパス
 TASK_LIST_FILE="${PROJECT_ROOT_DIR}/tasks.list" # ★要確認/変更★
 
 # 各タスクがGitリポジトリを一時的にクローン/チェックアウトするためのホスト上のベースディレクトリ
 # 高速なスクラッチディスク領域を推奨 (ユーザーのホームやworkディレクトリ以下に作成)
-HOST_TEMP_WORK_BASE_DIR="/work/kosei-ho/scratch/codebert_temp_work_batch" # ★要確認/変更★
+HOST_TEMP_WORK_BASE_DIR="/work/kosei-ho/scratch/codebert_temp_work_array"
 
 # CodeBERT-nt の最終的な解析結果を保存するホスト上のベースディレクトリ
-HOST_FINAL_OUTPUT_BASE_DIR="${PROJECT_ROOT_DIR}/results_batch" # ★要確認/変更★
+HOST_FINAL_OUTPUT_BASE_DIR="${PROJECT_ROOT_DIR}/results_batch"
 
 # --- コンテナ内パス設定 ---
 CONTAINER_PROJECT_MOUNT_POINT="/mnt/repo"  # クローンされたリポジトリがコンテナ内で見える場所
 CONTAINER_OUTPUT_MOUNT_POINT="/mnt/output" # 出力ディレクトリがコンテナ内で見える場所
 # Singularityイメージ内の実行スクリプト (run_codebertnt_in_container.sh) のフルパス
-CONTAINER_APP_SCRIPT_PATH="/app/run_codebertnt_in_container.sh" # ★イメージ内のパス★
+CONTAINER_APP_SCRIPT_PATH="/app/cluster_script/run_codebertnt_in_container.sh" # ★イメージ内のパス★
 # Singularityイメージ内のJAVA_HOMEパス
 CONTAINER_JAVA_HOME="/usr/lib/jvm/temurin-21-jdk-amd64/" # ★イメージ内のJDKパスに合わせる★
 # Singularityイメージ内のアプリケーションルート (codebertnt_runner.py等の基準)
 CONTAINER_APP_ROOT="/app" # ★イメージ内の構造に合わせる★
+export PYTHONPATH="$PWD/cbnt_dependencies/commons:$PWD/cbnt_dependencies/cbnt:/app:$PYTHONPATH"
 
 # --- End Configuration ---
 
 # --- 事前準備 ---
-echo "--- SLURM Job Information (Task ${SLURM_ARRAY_TASK_ID}) ---"
-echo "SLURM_JOB_ID: ${SLURM_JOB_ID}"
+echo "--- SLURM Job Information (Task ${SLURM_ARRAY_TASK_ID} of batch defined by ${TASK_LIST_FILE}) ---"
+echo "SLURM_JOB_ID: ${SLURM_JOB_ID}, SLURM_ARRAY_JOB_ID: ${SLURM_ARRAY_JOB_ID}"
 echo "SLURM_ARRAY_JOB_ID: ${SLURM_ARRAY_JOB_ID}"
 echo "Host: $(hostname)"
 echo "Executing Directory: $(pwd)"
@@ -57,12 +62,11 @@ echo "Host Final Output Base: ${HOST_FINAL_OUTPUT_BASE_DIR}"
 echo "----------------------------------------------------"
 
 # ログディレクトリ、出力ベースディレクトリ、一時作業ベースディレクトリの作成
-# sbatch実行時のカレントディレクトリ(PROJECT_ROOT_DIRを想定)にlogsディレクトリを作成
 mkdir -p "${PROJECT_ROOT_DIR}/logs" \
          "${PROJECT_ROOT_DIR}/error" \
          "${HOST_TEMP_WORK_BASE_DIR}" \
          "${HOST_FINAL_OUTPUT_BASE_DIR}"
-echo "Required host directories checked/created."
+echo "Required host directories checked/creatded."
 
 # Singularityモジュールのロード
 echo "Loading Singularity module..."
@@ -75,6 +79,22 @@ echo "Singularity called"
 # 0:project_name_owner_repo, 1:commit_id, 2:target_file_path_in_repo,
 # 3:output_identifier, 4:repository_url, 5:reference_repo_path_or_empty
 CURRENT_TASK_LINE=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "${TASK_LIST_FILE}")
+
+if [ ! -f "${TASK_LIST_FILE}" ]; then
+    echo "エラー: TASK_LIST_FILEが見つかりません: ${TASK_LIST_FILE}"
+    exit 1
+fi
+echo "TASK_LIST_FILE (current part) は存在します: ${TASK_LIST_FILE}"
+
+CURRENT_TASK_LINE=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "${TASK_LIST_FILE}")
+
+if [ -z "${CURRENT_TASK_LINE}" ]; then
+    # このSlurmタスクIDが現在の分割ファイルの行数を超えた場合
+    # (通常、ラッパーが正しい --array の上限を指定するので、この条件にはなりにくいが、念のため)
+    echo "情報: タスクインデックス ${SLURM_ARRAY_TASK_ID} は ${TASK_LIST_FILE} の範囲外です (ファイル行数: $(wc -l < "${TASK_LIST_FILE}") )。このタスクはスキップします。"
+    exit 0
+fi
+
 
 if [ -z "${CURRENT_TASK_LINE}" ]; then
     echo "エラー: タスクID ${SLURM_ARRAY_TASK_ID} に対応する行が ${TASK_LIST_FILE} に見つかりません。"
@@ -94,7 +114,7 @@ echo "Reference Repo Path: ${REFERENCE_REPO_PATH:-N/A}" # 空の場合は N/A �
 echo "-------------------------------------------------"
 
 # --- 各タスク固有のディレクトリ設定 ---
-HOST_TASK_WORK_DIR="${HOST_TEMP_WORK_BASE_DIR}/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}_${PROJECT_NAME_OWNER_REPO//\//_}"
+HOST_TASK_WORK_DIR="${HOST_TEMP_WORK_BASE_DIR}/${SLURM_JOB_ID}_task${SLURM_ARRAY_TASK_ID}_${PROJECT_NAME_OWNER_REPO//\//_}"
 mkdir -p "${HOST_TASK_WORK_DIR}"
 echo "Host task work directory: ${HOST_TASK_WORK_DIR}"
 
@@ -192,5 +212,6 @@ if [ ${SINGULARITY_EXIT_CODE} -ne 0 ]; then
     exit ${SINGULARITY_EXIT_CODE}
 fi
 
-echo "タスク ${SLURM_ARRAY_TASK_ID} (Output ID: ${OUTPUT_IDENTIFIER}) は正常に完了しました。"
+echo "タスク (SlurmTaskID ${SLURM_ARRAY_TASK_ID} from ${TASK_LIST_FILE}, Output ID ${OUTPUT_IDENTIFIER}) は正常に完了しました。"
 exit 0
+
