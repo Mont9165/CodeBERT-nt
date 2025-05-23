@@ -1,194 +1,182 @@
 #!/bin/bash
 
 # --- SBATCH Directives ---
-#SBATCH --job-name=codebert_nt_batch
-#SBATCH --output=logs/slurm_job_output_%A_%a.out
-#SBATCH --error=error/slurm_job_error_%A_%a.err
-#SBATCH --time=0-1:0:00      # 1タスクあたりの最大実行時間 (例: 30分) - ★要調整★
-#SBATCH --partition=ocigpu1a10_long  
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2      # ★要調整★ codebertnt_runner.py の -max_processes と関連
-#SBATCH --mem=16G               # ★要調整★
+#SBATCH --job-name=codebert_nt_project_batch # ジョブ名
+#SBATCH --output=/work/kosei-ho/CodeBERT_naruralness/CodeBERT-nt/logs/project_output_%A_%a.out # 標準出力ログの絶対パス
+#SBATCH --error=/work/kosei-ho/CodeBERT_naruralness/CodeBERT-nt/logs/project_error_%A_%a.err  # 標準エラーログの絶対パス
+#SBATCH --array=0-567%100 # ★重要★ project_list.txt の (総行数 - 1) に必ず調整してください (例: 460プロジェクトなら0-459)
+#SBATCH --time=0-10:00:00      # 1プロジェクトあたりの最大実行時間 - ★プロジェクト内のタスク数に応じて要調整★
+#SBATCH --partition=azuregpu1h100_long  # ★NAISTクラスタの適切な本番用パーティション名に変更してください★
+#SBATCH --ntasks=1             # 1配列タスクあたり1つのMPIタスク (通常このまま)
+#SBATCH --cpus-per-task=4      # ★1プロジェクト処理に必要なCPUコア数。コンテナ内スクリプトの並列度も考慮して調整★
+#SBATCH --mem=32G              # ★1プロジェクト処理に必要なメモリ量。プロジェクト内の最大ファイル数やサイズを考慮して調整★
 ##SBATCH --gres=gpu:1          # GPUを使用する場合にコメント解除し、必要なGPU数と種類を指定
 
-# --- Configuration (このセクションのパスや設定を必ずご自身の環境に合わせてください) ---
+# --- Configuration ---
+# このセクションのパスや設定を必ずご自身の環境に合わせてください。
 
-# このスクリプト自身の場所を基準にするための設定 (推奨)
+# プロジェクトのルートディレクトリ (固定の絶対パスで指定)
 PROJECT_ROOT_DIR="/work/kosei-ho/CodeBERT_naruralness/CodeBERT-nt"
 
-# Singularityイメージファイルのパス
-SINGULARITY_IMAGE_PATH="${PROJECT_ROOT_DIR}/codebert-nt.sif" # ★要確認/変更★ (プロジェクトルート直下にあると仮定)
+# Singularityイメージファイルの絶対パス
+SINGULARITY_IMAGE_PATH="${PROJECT_ROOT_DIR}/codebert-nt.sif"
 
-if [ -z "${MY_CURRENT_TASK_LIST_FILE}" ]; then
-    echo "エラー: 環境変数 MY_CURRENT_TASK_LIST_FILE が設定されていません。ラッパースクリプトから実行してください。"
-    exit 1
-fi
-TASK_LIST_FILE="${MY_CURRENT_TASK_LIST_FILE}"
+# 各Slurmタスクが処理するプロジェクトの情報が書かれたファイル (プロジェクト名, リポジトリURL, 参照パス)
+PROJECT_LIST_FILE="${PROJECT_ROOT_DIR}/data/processed/project_list.txt" # ★このファイルが存在することを確認★
 
-# tasks.list ファイルのパス
-TASK_LIST_FILE="${PROJECT_ROOT_DIR}/tasks.list" # ★要確認/変更★
+# コンテナ内で処理される個々のタスク情報が書かれた、ソート済みの完全なリスト
+# (project_name, commit_id, target_file, output_id, repo_url, ref_path の形式を想定)
+ORIGINAL_SORTED_TASKS_FILE_ON_HOST="${PROJECT_ROOT_DIR}/tasks_sorted.list" # ★このファイルが存在することを確認★
 
-# 各タスクがGitリポジトリを一時的にクローン/チェックアウトするためのホスト上のベースディレクトリ
-# 高速なスクラッチディスク領域を推奨 (ユーザーのホームやworkディレクトリ以下に作成)
-HOST_TEMP_WORK_BASE_DIR="/work/kosei-ho/scratch/codebert_temp_work_array"
+# 各プロジェクトの一時作業(Gitクローン)ディレクトリのベース
+HOST_TEMP_WORK_BASE_DIR="/work/kosei-ho/scratch/codebert_project_work_final" # ★必要なら名前変更★
 
-# CodeBERT-nt の最終的な解析結果を保存するホスト上のベースディレクトリ
-HOST_FINAL_OUTPUT_BASE_DIR="${PROJECT_ROOT_DIR}/results_batch"
+# 各プロジェクトの最終出力ディレクトリのベース
+HOST_FINAL_OUTPUT_BASE_DIR="${PROJECT_ROOT_DIR}/results_project_batch_final" # ★必要なら名前変更★
 
 # --- コンテナ内パス設定 ---
-CONTAINER_PROJECT_MOUNT_POINT="/mnt/repo"  # クローンされたリポジトリがコンテナ内で見える場所
-CONTAINER_OUTPUT_MOUNT_POINT="/mnt/output" # 出力ディレクトリがコンテナ内で見える場所
-# Singularityイメージ内の実行スクリプト (run_codebertnt_in_container.sh) のフルパス
-CONTAINER_APP_SCRIPT_PATH="/app/cluster_script/run_codebertnt_in_container.sh" # ★イメージ内のパス★
-# Singularityイメージ内のJAVA_HOMEパス
-CONTAINER_JAVA_HOME="/usr/lib/jvm/temurin-21-jdk-amd64/" # ★イメージ内のJDKパスに合わせる★
-# Singularityイメージ内のアプリケーションルート (codebertnt_runner.py等の基準)
-CONTAINER_APP_ROOT="/app" # ★イメージ内の構造に合わせる★
-export PYTHONPATH="$PWD/cbnt_dependencies/commons:$PWD/cbnt_dependencies/cbnt:/app:$PYTHONPATH"
+CONTAINER_PROJECT_REPO_MOUNT_POINT="/mnt/repo"  # プロジェクトのGitリポジトリのマウント先
+CONTAINER_ORIGINAL_TASKS_LIST_MOUNT_POINT="/mnt/original_sorted_tasks.list" # 元のタスクリストのマウント先
+CONTAINER_OUTPUT_BASE_MOUNT_POINT="/mnt/output_project_base" # このプロジェクトの出力ベース
 
+CONTAINER_APP_SCRIPT_PATH="/app/run_codebertnt_in_container.sh" # Singularityイメージ内の実行スクリプト
+CONTAINER_JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64" # ★Singularityイメージ内の実際のJDKパスに合わせる★
+CONTAINER_APP_ROOT="/app" # Singularityイメージ内のアプリケーションルート
 # --- End Configuration ---
 
 # --- 事前準備 ---
-echo "--- SLURM Job Information (Task ${SLURM_ARRAY_TASK_ID} of batch defined by ${TASK_LIST_FILE}) ---"
-echo "SLURM_JOB_ID: ${SLURM_JOB_ID}, SLURM_ARRAY_JOB_ID: ${SLURM_ARRAY_JOB_ID}"
-echo "SLURM_ARRAY_JOB_ID: ${SLURM_ARRAY_JOB_ID}"
-echo "Host: $(hostname)"
-echo "Executing Directory: $(pwd)"
-echo "Project Root (derived): ${PROJECT_ROOT_DIR}"
-echo "Singularity Image: ${SINGULARITY_IMAGE_PATH}"
-echo "Task List File: ${TASK_LIST_FILE}"
-echo "Host Temp Work Base: ${HOST_TEMP_WORK_BASE_DIR}"
-echo "Host Final Output Base: ${HOST_FINAL_OUTPUT_BASE_DIR}"
+echo "--- SLURM Project Job Start (SlurmTaskID ${SLURM_ARRAY_TASK_ID}) ---"
+echo "SLURM_JOB_ID: ${SLURM_JOB_ID}"
+echo "SLURM_ARRAY_JOB_ID: ${SLURM_ARRAY_JOB_ID}" # SLURM_ARRAY_JOB_ID はジョブ配列全体のID
+echo "Hostname: $(hostname)"
+echo "Date: $(date)"
+echo "Initial WorkDir (where sbatch was run, or Slurm's default): $(pwd)"
+echo "PROJECT_ROOT_DIR (Configured): ${PROJECT_ROOT_DIR}"
+echo "SINGULARITY_IMAGE_PATH: ${SINGULARITY_IMAGE_PATH}"
+echo "PROJECT_LIST_FILE: ${PROJECT_LIST_FILE}"
+echo "ORIGINAL_SORTED_TASKS_FILE_ON_HOST: ${ORIGINAL_SORTED_TASKS_FILE_ON_HOST}"
+echo "HOST_TEMP_WORK_BASE_DIR: ${HOST_TEMP_WORK_BASE_DIR}"
+echo "HOST_FINAL_OUTPUT_BASE_DIR: ${HOST_FINAL_OUTPUT_BASE_DIR}"
 echo "----------------------------------------------------"
 
 # ログディレクトリ、出力ベースディレクトリ、一時作業ベースディレクトリの作成
 mkdir -p "${PROJECT_ROOT_DIR}/logs" \
-         "${PROJECT_ROOT_DIR}/error" \
          "${HOST_TEMP_WORK_BASE_DIR}" \
          "${HOST_FINAL_OUTPUT_BASE_DIR}"
-echo "Required host directories checked/creatded."
+echo "Required host directories checked/created."
 
 # Singularityモジュールのロード
 echo "Loading Singularity module..."
-module load singularity # ★NAISTクラスタのSingularityバージョンに合わせて変更★
-echo "Singularity called"
+module purge
+module load singularity/3.8.7 # ★NAISTクラスタの利用可能なSingularityバージョンに合わせてください★
+echo "Singularity module load attempt finished."
+echo "PATH after module load: $PATH"
+echo "Which singularity: $(which singularity)"
+singularity --version || { echo "エラー: Singularityコマンドが利用できません。モジュールロード失敗またはパスの問題の可能性。"; exit 1; }
+echo "---"
 
 # --- タスク処理 ---
-# tasks.list から現在のタスクIDに対応する行を読み込む
-# tasks.list のフォーマット (想定):
-# 0:project_name_owner_repo, 1:commit_id, 2:target_file_path_in_repo,
-# 3:output_identifier, 4:repository_url, 5:reference_repo_path_or_empty
-CURRENT_TASK_LINE=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "${TASK_LIST_FILE}")
-
-if [ ! -f "${TASK_LIST_FILE}" ]; then
-    echo "エラー: TASK_LIST_FILEが見つかりません: ${TASK_LIST_FILE}"
+# ファイル存在チェック
+if [ ! -f "${PROJECT_LIST_FILE}" ]; then
+    echo "エラー: プロジェクトリストファイル ${PROJECT_LIST_FILE} が見つかりません。"
     exit 1
 fi
-echo "TASK_LIST_FILE (current part) は存在します: ${TASK_LIST_FILE}"
-
-CURRENT_TASK_LINE=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "${TASK_LIST_FILE}")
-
-if [ -z "${CURRENT_TASK_LINE}" ]; then
-    # このSlurmタスクIDが現在の分割ファイルの行数を超えた場合
-    # (通常、ラッパーが正しい --array の上限を指定するので、この条件にはなりにくいが、念のため)
-    echo "情報: タスクインデックス ${SLURM_ARRAY_TASK_ID} は ${TASK_LIST_FILE} の範囲外です (ファイル行数: $(wc -l < "${TASK_LIST_FILE}") )。このタスクはスキップします。"
-    exit 0
+if [ ! -f "${ORIGINAL_SORTED_TASKS_FILE_ON_HOST}" ]; then
+    echo "エラー: 元のソート済みタスクリストファイル ${ORIGINAL_SORTED_TASKS_FILE_ON_HOST} が見つかりません。"
+    exit 1
 fi
+echo "プロジェクトリストファイル: ${PROJECT_LIST_FILE}"
+echo "元タスクリストファイル: ${ORIGINAL_SORTED_TASKS_FILE_ON_HOST}"
 
+# project_list.txt から現在のSlurmタスクが担当するプロジェクト情報を読み込む
+# フォーマット想定: project_name_owner_repo,repository_url,reference_repo_path_or_empty
+CURRENT_PROJECT_INFO_LINE=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "${PROJECT_LIST_FILE}")
 
-if [ -z "${CURRENT_TASK_LINE}" ]; then
-    echo "エラー: タスクID ${SLURM_ARRAY_TASK_ID} に対応する行が ${TASK_LIST_FILE} に見つかりません。"
+if [ -z "${CURRENT_PROJECT_INFO_LINE}" ]; then
+    echo "エラー: プロジェクトタスクID ${SLURM_ARRAY_TASK_ID} に対応する行が ${PROJECT_LIST_FILE} に見つかりません。"
     exit 1
 fi
 
-IFS=',' read -r PROJECT_NAME_OWNER_REPO COMMIT_ID TARGET_FILE_IN_REPO \
-                OUTPUT_IDENTIFIER REPOSITORY_URL REFERENCE_REPO_PATH <<< "${CURRENT_TASK_LINE}"
+IFS=',' read -r PROJECT_NAME_OWNER_REPO REPOSITORY_URL REFERENCE_REPO_PATH <<< "${CURRENT_PROJECT_INFO_LINE}"
 
-echo "--- Current Task Details (ID: ${SLURM_ARRAY_TASK_ID}) ---"
+echo "--- Current Project Task (SlurmTaskID: ${SLURM_ARRAY_TASK_ID}) ---"
 echo "Project Name (owner_reponame): ${PROJECT_NAME_OWNER_REPO}"
-echo "Commit ID: ${COMMIT_ID}"
-echo "Target File in Repo: ${TARGET_FILE_IN_REPO}"
-echo "Output Identifier: ${OUTPUT_IDENTIFIER}"
 echo "Repository URL: ${REPOSITORY_URL}"
 echo "Reference Repo Path: ${REFERENCE_REPO_PATH:-N/A}" # 空の場合は N/A と表示
 echo "-------------------------------------------------"
 
-# --- 各タスク固有のディレクトリ設定 ---
-HOST_TASK_WORK_DIR="${HOST_TEMP_WORK_BASE_DIR}/${SLURM_JOB_ID}_task${SLURM_ARRAY_TASK_ID}_${PROJECT_NAME_OWNER_REPO//\//_}"
-mkdir -p "${HOST_TASK_WORK_DIR}"
-echo "Host task work directory: ${HOST_TASK_WORK_DIR}"
+# --- このプロジェクト固有のディレクトリ設定 ---
+# このプロジェクトの一時作業ディレクトリ (Gitクローン用)
+# ディレクトリ名にジョブID全体とタスクIDを含め、プロジェクト名も入れることでユニーク性を高める
+HOST_PROJECT_WORK_DIR="${HOST_TEMP_WORK_BASE_DIR}/${SLURM_ARRAY_JOB_ID}_proj${SLURM_ARRAY_TASK_ID}_${PROJECT_NAME_OWNER_REPO//\//_}"
+mkdir -p "${HOST_PROJECT_WORK_DIR}"
+echo "Host project work directory: ${HOST_PROJECT_WORK_DIR}"
 
-HOST_TASK_FINAL_OUTPUT_DIR="${HOST_FINAL_OUTPUT_BASE_DIR}/${OUTPUT_IDENTIFIER}"
-mkdir -p "${HOST_TASK_FINAL_OUTPUT_DIR}"
-echo "Host task final output directory: ${HOST_TASK_FINAL_OUTPUT_DIR}"
+# このプロジェクトの最終出力ベースディレクトリ
+# コンテナ内スクリプトが、この下に個々のコミットやファイルの出力サブディレクトリを作成する
+HOST_PROJECT_FINAL_OUTPUT_DIR="${HOST_FINAL_OUTPUT_BASE_DIR}/${PROJECT_NAME_OWNER_REPO//\//_}"
+mkdir -p "${HOST_PROJECT_FINAL_OUTPUT_DIR}"
+echo "Host project final output directory: ${HOST_PROJECT_FINAL_OUTPUT_DIR}"
 
-# --- Gitリポジトリの準備 ---
-echo "リポジトリ (${REPOSITORY_URL}) を ${HOST_TASK_WORK_DIR} に準備しています..."
-SBATCH_RUN_DIR=$(pwd) # sbatch実行時のカレントディレクトリを保存 (通常プロジェクトルート)
+# --- Gitリポジトリの準備 (プロジェクトごとに1回) ---
+echo "リポジトリ (${REPOSITORY_URL}) を ${HOST_PROJECT_WORK_DIR} に準備しています..."
+SBATCH_SUBMIT_DIR_CAPTURE="${SLURM_SUBMIT_DIR:-$(pwd)}" # ジョブ投入時のディレクトリをSlurm変数から取得、なければ現在のpwd
 
-cd "${HOST_TASK_WORK_DIR}" || { echo "エラー: ${HOST_TASK_WORK_DIR} へのcdに失敗"; exit 1; }
-TEMP_GIT_DIR_NAME=$(basename "${REPOSITORY_URL}" .git)
-ACTUAL_GIT_REPO_PATH_ON_HOST="${HOST_TASK_WORK_DIR}/${TEMP_GIT_DIR_NAME}"
+# Gitクローンは、プロジェクト固有の一時作業ディレクトリ(ACTUAL_GIT_REPO_PATH_ON_HOST)に対して行う
+# まず、クローン先の親ディレクトリに移動
+cd "${HOST_PROJECT_WORK_DIR}" || { echo "エラー: 作業ディレクトリ ${HOST_PROJECT_WORK_DIR} に移動できませんでした。"; exit 1; }
+TEMP_GIT_DIR_NAME=$(basename "${REPOSITORY_URL}" .git) # リポジトリ名を取得 (例: solo)
+ACTUAL_GIT_REPO_PATH_ON_HOST="${HOST_PROJECT_WORK_DIR}/${TEMP_GIT_DIR_NAME}" # クローンされるリポジトリのフルパス
+
+# 既に同名ディレクトリがあれば削除 (前回の残骸や途中失敗の場合を考慮)
+if [ -d "${ACTUAL_GIT_REPO_PATH_ON_HOST}" ]; then
+    echo "警告: 既存のディレクトリ ${ACTUAL_GIT_REPO_PATH_ON_HOST} を削除します。"
+    rm -rf "${ACTUAL_GIT_REPO_PATH_ON_HOST}"
+fi
 
 GIT_CLONE_CMD="git clone --quiet"
 if [ -n "${REFERENCE_REPO_PATH}" ] && [ -d "${REFERENCE_REPO_PATH}" ]; then
     echo "参照リポジトリ ${REFERENCE_REPO_PATH} を使用します。"
     GIT_CLONE_CMD+=" --reference ${REFERENCE_REPO_PATH} --dissociate"
 fi
-GIT_CLONE_CMD+=" ${REPOSITORY_URL} ${ACTUAL_GIT_REPO_PATH_ON_HOST}"
+GIT_CLONE_CMD+=" ${REPOSITORY_URL} ${ACTUAL_GIT_REPO_PATH_ON_HOST}" # クローン先を明示的に指定
 echo "Executing Git Clone: ${GIT_CLONE_CMD}"
 eval "${GIT_CLONE_CMD}"
+
 if [ $? -ne 0 ] || [ ! -d "${ACTUAL_GIT_REPO_PATH_ON_HOST}" ]; then
-    echo "エラー: リポジトリ ${REPOSITORY_URL} のクローンに失敗しました。"
-    cd "${SBATCH_RUN_DIR}"
-    rm -rf "${HOST_TASK_WORK_DIR}"
+    echo "エラー: リポジトリ ${REPOSITORY_URL} のクローンに失敗しました (場所: ${ACTUAL_GIT_REPO_PATH_ON_HOST})。"
+    cd "${SBATCH_SUBMIT_DIR_CAPTURE}" # 元のディレクトリに戻る
+    rm -rf "${HOST_PROJECT_WORK_DIR}" # 作成した一時ディレクトリを削除
     exit 1
 fi
-
-cd "${ACTUAL_GIT_REPO_PATH_ON_HOST}" || { echo "エラー: ${ACTUAL_GIT_REPO_PATH_ON_HOST} へのcdに失敗"; cd "${SBATCH_RUN_DIR}"; rm -rf "${HOST_TASK_WORK_DIR}"; exit 1; }
-
-echo "コミット ${COMMIT_ID} をチェックアウトしています..."
-if ! git cat-file -e "${COMMIT_ID}"^{commit} 2>/dev/null; then
-    echo "Commit ${COMMIT_ID} not found locally, attempting to fetch..."
-    git fetch --quiet origin "${COMMIT_ID}" || git fetch --quiet origin --tags || git fetch --quiet
-    if ! git cat-file -e "${COMMIT_ID}"^{commit} 2>/dev/null; then
-        echo "エラー: コミット ${COMMIT_ID} をfetch後も見つけられません。"
-        cd "${SBATCH_RUN_DIR}"
-        rm -rf "${HOST_TASK_WORK_DIR}"
-        exit 1
-    fi
-fi
-git checkout --quiet "${COMMIT_ID}"
-if [ $? -ne 0 ]; then
-    echo "エラー: コミット ${COMMIT_ID} のチェックアウトに失敗しました。"
-    cd "${SBATCH_RUN_DIR}"
-    rm -rf "${HOST_TASK_WORK_DIR}"
-    exit 1
-fi
-echo "リポジトリの準備が完了しました。"
-cd "${SBATCH_RUN_DIR}" # sbatch実行時のカレントディレクトリに戻る
-# --- Gitリポジトリの準備完了 ---
-
+echo "プロジェクトリポジトリの準備完了: ${ACTUAL_GIT_REPO_PATH_ON_HOST}"
+# この段階では特定のコミットへのチェックアウトは行わない。コンテナ内スクリプトが行う。
+cd "${SBATCH_SUBMIT_DIR_CAPTURE}" # sbatch実行時のカレントディレクトリに戻る
+# --- Gitリポジトリ準備完了 ---
 
 
 # --- Singularityコンテナの実行 ---
-echo "Singularityコンテナ (${SINGULARITY_IMAGE_PATH}) を実行します..."
-
+echo "Singularityコンテナ (${SINGULARITY_IMAGE_PATH}) を実行します (プロジェクト: ${PROJECT_NAME_OWNER_REPO})..."
 SINGULARITY_EXEC_OPTS=""
-if [ -n "${CUDA_VISIBLE_DEVICES}" ]; then # GPU利用時
+# GPUを使用する場合のオプション (SBATCHディレクティブで --gres=gpu を指定した場合)
+if [ -n "${CUDA_VISIBLE_DEVICES}" ]; then
     SINGULARITY_EXEC_OPTS+="--nv "
 fi
 
-SINGULARITY_EXEC_OPTS+="--bind ${ACTUAL_GIT_REPO_PATH_ON_HOST}:${CONTAINER_PROJECT_MOUNT_POINT}:ro "
-SINGULARITY_EXEC_OPTS+="--bind ${HOST_TASK_FINAL_OUTPUT_DIR}:${CONTAINER_OUTPUT_MOUNT_POINT}:rw "
-SINGULARITY_EXEC_OPTS+="--bind /etc/passwd:/etc/passwd:ro --bind /etc/group:/etc/group:ro "
+# バインドマウントの設定
+SINGULARITY_EXEC_OPTS+="--bind ${ACTUAL_GIT_REPO_PATH_ON_HOST}:${CONTAINER_PROJECT_REPO_MOUNT_POINT}:rw " # ★コンテナ内でgit checkoutするため :rw★
+SINGULARITY_EXEC_OPTS+="--bind ${HOST_PROJECT_FINAL_OUTPUT_DIR}:${CONTAINER_OUTPUT_BASE_MOUNT_POINT}:rw "
+SINGULARITY_EXEC_OPTS+="--bind ${ORIGINAL_SORTED_TASKS_FILE_ON_HOST}:${CONTAINER_ORIGINAL_TASKS_LIST_MOUNT_POINT}:ro "
+SINGULARITY_EXEC_OPTS+="--bind /etc/passwd:/etc/passwd:ro --bind /etc/group:/group:ro " # /etc/group も :ro
 
+# コンテナ内実行スクリプトに渡す引数
 CMD_ARGS=(
-    "${CONTAINER_PROJECT_MOUNT_POINT}"
-    "${TARGET_FILE_IN_REPO}"
-    "${CONTAINER_OUTPUT_MOUNT_POINT}"
-    "${CONTAINER_JAVA_HOME}"
-    "${CONTAINER_APP_ROOT}"
+    "${CONTAINER_PROJECT_REPO_MOUNT_POINT}"         # $1: マウントされたリポジトリパス (この中でgit checkoutする)
+    "${CONTAINER_ORIGINAL_TASKS_LIST_MOUNT_POINT}"   # $2: マウントされた元のtasks_sorted.list
+    "${PROJECT_NAME_OWNER_REPO}"                     # $3: 現在処理中のプロジェクト名 (コンテナ内スクリプトがフィルタリングに使う)
+    "${CONTAINER_OUTPUT_BASE_MOUNT_POINT}"          # $4: このプロジェクトの出力ベースディレクトリ
+    "${CONTAINER_JAVA_HOME}"                         # $5
+    "${CONTAINER_APP_ROOT}"                          # $6
 )
 
 echo "実行コマンド: singularity exec ${SINGULARITY_EXEC_OPTS} ${SINGULARITY_IMAGE_PATH} bash ${CONTAINER_APP_SCRIPT_PATH} ${CMD_ARGS[*]}"
@@ -202,16 +190,15 @@ echo "Singularityコンテナの実行が終了しました。終了コード: $
 
 
 # --- クリーンアップ ---
-echo "一時作業ディレクトリ ${HOST_TASK_WORK_DIR} を削除しています..."
-rm -rf "${HOST_TASK_WORK_DIR}"
-echo "クリーンアップ完了。"
+echo "一時作業ディレクトリ ${HOST_PROJECT_WORK_DIR} を削除しています..."
+# rm -rf "${HOST_PROJECT_WORK_DIR}" # ★テストが完全に成功し、結果も確認できるまではコメントアウト推奨★
+echo "クリーンアップ完了 (テスト中は削除スキップの可能性あり)。"
 # --- クリーンアップ完了 ---
 
 if [ ${SINGULARITY_EXIT_CODE} -ne 0 ]; then
-    echo "エラー: タスク ${SLURM_ARRAY_TASK_ID} (Output ID: ${OUTPUT_IDENTIFIER}) は失敗しました。終了コード: ${SINGULARITY_EXIT_CODE}"
+    echo "エラー: プロジェクトタスク ${SLURM_ARRAY_TASK_ID} (Project: ${PROJECT_NAME_OWNER_REPO}) は失敗しました。終了コード: ${SINGULARITY_EXIT_CODE}"
     exit ${SINGULARITY_EXIT_CODE}
 fi
 
-echo "タスク (SlurmTaskID ${SLURM_ARRAY_TASK_ID} from ${TASK_LIST_FILE}, Output ID ${OUTPUT_IDENTIFIER}) は正常に完了しました。"
+echo "プロジェクトタスク ${SLURM_ARRAY_TASK_ID} (Project: ${PROJECT_NAME_OWNER_REPO}) は正常に完了しました。"
 exit 0
-

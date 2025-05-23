@@ -1,113 +1,102 @@
 #!/bin/bash
 set -e
 
-# --- スクリプト引数の受け取り ---
-ARG_REPO_PATH="$1"                # $1: コンテナ内のリポジトリのルートパス (例: /mnt/repo)
-ARG_TARGET_CLASSES_RELATIVE_PATH="$2" # $2: リポジトリルートからのターゲットファイルの相対パス
-ARG_OUTPUT_DIR="$3"               # $3: コンテナ内の出力ディレクトリパス (例: /mnt/output)
-ARG_JAVA_HOME="$4"                # $4: コンテナ内のJava Homeパス
-APP_ROOT="${5:-/app}"             # $5: コンテナ内のアプリケーションスクリプトのルートパス (デフォルト /app)
+# --- スクリプト引数 ---
+ARG_PROJECT_REPO_IN_CONTAINER="$1"  # マウントされたリポジトリパス (この中でgit checkout)
+ARG_ORIGINAL_TASKS_LIST_PATH="$2" # マウントされた元のtasks_sorted.list
+ARG_CURRENT_PROJECT_NAME="$3"     # 現在処理中のプロジェクト名
+ARG_PROJECT_OUTPUT_BASE_DIR="$4"  # このプロジェクトの出力ベースディレクトリ
+ARG_JAVA_HOME="$5"
+APP_ROOT="${6:-/app}"
 
-# --- 固定パラメータ (必要に応じてSlurmスクリプトから引数として渡すように変更可能) ---
-PYTHON_EXECUTABLE="python"
-# ★APP_ROOT からの相対パス。Singularity定義ファイルの %files でのコピー先と合わせる★
+# ... (PYTHON_EXECUTABLE, CODEBERT_RUNNER_FULL_PATH などは前回同様) ...
+PYTHON_EXECUTABLE="python3"
 CODEBERT_RUNNER_SCRIPT_RELATIVE_PATH="codebertnt/codebertnt_runner.py" 
-FORCE_RELOAD="False"
-COSINE_LOGIC="False" # Pythonのboolとして解釈されるように渡す場合は調整
-
-# --- 処理開始ログ ---
-echo "-----------------------------------------------------"
-echo "--- Starting task inside Singularity container ---"
-echo "Timestamp: $(date)"
-echo "SLURM_JOB_ID: ${SLURM_JOB_ID:-N/A}, SLURM_ARRAY_TASK_ID: ${SLURM_ARRAY_TASK_ID:-N/A}" # Slurm環境変数はコンテナ内に引き継がれることが多い
-echo "Container Hostname: $(hostname)"
-echo "-----------------------------------------------------"
-echo "Received Arguments:"
-echo "  Repository Path (in container): ${ARG_REPO_PATH}"
-echo "  Target Classes (relative path): ${ARG_TARGET_CLASSES_RELATIVE_PATH}"
-echo "  Output Directory (in container): ${ARG_OUTPUT_DIR}"
-echo "  Java Home (in container): ${ARG_JAVA_HOME}"
-echo "  Application Root (in container): ${APP_ROOT}"
-echo ""
-echo "Fixed Parameters:"
-echo "  Python Executable: ${PYTHON_EXECUTABLE}"
-echo "  CodeBERT Runner Script (relative to APP_ROOT): ${CODEBERT_RUNNER_SCRIPT_RELATIVE_PATH}"
-echo "  Force Reload: ${FORCE_RELOAD}"
-echo "  Cosine Logic: ${COSINE_LOGIC}"
-echo "-----------------------------------------------------"
-
-# --- パスとファイルの検証 ---
 CODEBERT_RUNNER_FULL_PATH="${APP_ROOT}/${CODEBERT_RUNNER_SCRIPT_RELATIVE_PATH}"
-if [ ! -f "${CODEBERT_RUNNER_FULL_PATH}" ]; then
-    echo "エラー(コンテナ内): CodeBERT実行スクリプトが見つかりません: ${CODEBERT_RUNNER_FULL_PATH}"
-    exit 1
-fi
-echo "コンテナ内: CodeBERT実行スクリプト確認OK: ${CODEBERT_RUNNER_FULL_PATH}"
 
-if [ ! -d "${ARG_REPO_PATH}" ]; then
-    echo "エラー(コンテナ内): 指定されたリポジトリパスが見つかりません: ${ARG_REPO_PATH}"
-    exit 1
-fi
-echo "コンテナ内: リポジトリパス確認OK: ${ARG_REPO_PATH}"
+echo "--- Project Task Started in Container (Project: ${ARG_CURRENT_PROJECT_NAME}) ---"
+# ... (基本的なログ)
 
-TARGET_FILE_FULL_PATH_IN_CONTAINER="${ARG_REPO_PATH}/${ARG_TARGET_CLASSES_RELATIVE_PATH}"
-if [ ! -f "${TARGET_FILE_FULL_PATH_IN_CONTAINER}" ]; then
-    echo "エラー(コンテナ内): 指定されたターゲットファイルがリポジトリ内に見つかりません: ${TARGET_FILE_FULL_PATH_IN_CONTAINER}"
-    echo "  (相対パス: ${ARG_TARGET_CLASSES_RELATIVE_PATH} at リポジトリ: ${ARG_REPO_PATH})"
-    exit 1
-fi
-echo "コンテナ内: ターゲットファイル確認OK: ${TARGET_FILE_FULL_PATH_IN_CONTAINER}"
+# 1. 元のタスクリストから現在のプロジェクトのタスクのみをフィルタリング
+#    awk を使うと効率的 (project_nameが第1列と仮定)
+FILTERED_PROJECT_TASKS_FILE="/tmp/filtered_tasks_for_${ARG_CURRENT_PROJECT_NAME//\//_}.list"
+awk -F, -v project="${ARG_CURRENT_PROJECT_NAME}" '$1 == project {print}' "${ARG_ORIGINAL_TASKS_LIST_PATH}" > "${FILTERED_PROJECT_TASKS_FILE}"
 
-if [ ! -d "${ARG_OUTPUT_DIR}" ]; then
-    echo "警告(コンテナ内): 指定された出力ディレクトリが見つかりません: ${ARG_OUTPUT_DIR}"
-    echo "                 ディレクトリを作成します。"
-    mkdir -p "${ARG_OUTPUT_DIR}"
-    if [ ! -d "${ARG_OUTPUT_DIR}" ]; then
-        echo "エラー(コンテナ内): 出力ディレクトリの作成に失敗しました: ${ARG_OUTPUT_DIR}"
-        exit 1
+if [ ! -s "${FILTERED_PROJECT_TASKS_FILE}" ]; then
+    echo "情報: プロジェクト ${ARG_CURRENT_PROJECT_NAME} に該当するタスクが見つかりません。"
+    exit 0
+fi
+echo "プロジェクト ${ARG_CURRENT_PROJECT_NAME} のタスクを抽出しました。($(wc -l < "${FILTERED_PROJECT_TASKS_FILE}") 件)"
+
+# 2. フィルタリングされたタスクをコミットIDでソート (重要: これによりコミット切り替えが最小限になる)
+SORTED_FILTERED_TASKS_FILE="/tmp/sorted_filtered_tasks_for_${ARG_CURRENT_PROJECT_NAME//\//_}.list"
+# tasks_sorted.listの列構成: project,commit,file,output_id,repo_url,ref_path (コミットIDが第2列と仮定)
+sort -t, -k2,2 "${FILTERED_PROJECT_TASKS_FILE}" > "${SORTED_FILTERED_TASKS_FILE}"
+
+# 3. コミットごとにループし、その中のファイルを処理
+current_checked_out_commit=""
+while IFS=',' read -r _PROJECT_NAME_ITEM COMMIT_ID_ITEM TARGET_FILE_IN_REPO_ITEM \
+                        OUTPUT_IDENTIFIER_ITEM _REPO_URL_ITEM _REF_PATH_ITEM; do
+    
+    echo ""
+    echo "  Processing item - Commit: ${COMMIT_ID_ITEM}, File: ${TARGET_FILE_IN_REPO_ITEM}"
+
+    # 必要であればコミットをチェックアウト (現在のコミットと異なれば)
+    if [ "${current_checked_out_commit}" != "${COMMIT_ID_ITEM}" ]; then
+        echo "    Checking out commit ${COMMIT_ID_ITEM} in ${ARG_PROJECT_REPO_IN_CONTAINER}..."
+        cd "${ARG_PROJECT_REPO_IN_CONTAINER}" || { echo "エラー: リポジトリへのcd失敗"; continue; } # エラーなら次のアイテムへ
+        
+        # git fetch が必要になる場合も考慮 (ただし、Slurmスクリプト側でクローン時に全履歴取得を推奨)
+        if ! git cat-file -e "${COMMIT_ID_ITEM}"^{commit} 2>/dev/null; then
+            echo "    Commit ${COMMIT_ID_ITEM} not found, attempting fetch..."
+            git fetch --quiet origin "${COMMIT_ID_ITEM}" || git fetch --quiet origin --tags || git fetch --quiet
+            if ! git cat-file -e "${COMMIT_ID_ITEM}"^{commit} 2>/dev/null; then
+                echo "    エラー: コミット ${COMMIT_ID_ITEM} fetch後も発見できず。スキップします。"
+                continue
+            fi
+        fi
+        git checkout --quiet "${COMMIT_ID_ITEM}"
+        if [ $? -ne 0 ]; then
+            echo "    エラー: コミット ${COMMIT_ID_ITEM} のチェックアウト失敗。スキップします。"
+            continue
+        fi
+        current_checked_out_commit="${COMMIT_ID_ITEM}"
+        echo "    Commit ${COMMIT_ID_ITEM} checked out."
     fi
-fi
-echo "コンテナ内: 出力ディレクトリ確認OK: ${ARG_OUTPUT_DIR}"
+    
+    # 各アイテムの出力ディレクトリ (プロジェクトのベース出力ディレクトリの下に)
+    ITEM_SPECIFIC_OUTPUT_DIR="${ARG_PROJECT_OUTPUT_BASE_DIR}/${OUTPUT_IDENTIFIER_ITEM}"
+    mkdir -p "${ITEM_SPECIFIC_OUTPUT_DIR}"
+    echo "    Output for this item: ${ITEM_SPECIFIC_OUTPUT_DIR}"
 
-if [ ! -d "${ARG_JAVA_HOME}" ] || [ ! -x "${ARG_JAVA_HOME}/bin/java" ]; then
-    echo "警告(コンテナ内): 指定されたJava Homeパス '${ARG_JAVA_HOME}' が無効か、java実行ファイルが見つかりません。"
-fi
-echo "コンテナ内: Java Home確認: ${ARG_JAVA_HOME}"
-echo "-----------------------------------------------------"
+    # ターゲットファイルの存在確認 (チェックアウト後のリポジトリ内で)
+    TARGET_FILE_FULL_PATH_IN_REPO_ITEM="${ARG_PROJECT_REPO_IN_CONTAINER}/${TARGET_FILE_IN_REPO_ITEM}"
+    if [ ! -f "${TARGET_FILE_FULL_PATH_IN_REPO_ITEM}" ]; then
+        echo "    エラー: ターゲットファイルが見つかりません: ${TARGET_FILE_FULL_PATH_IN_REPO_ITEM} (コミット ${COMMIT_ID_ITEM} 内)"
+        continue
+    fi
 
-# --- CodeBERT-nt Pythonスクリプトの実行 ---
-echo "コンテナ内: codebertnt_runner.py を実行します..."
-echo "PYTHONPATH: ${PYTHONPATH}" # Singularity定義ファイルで設定されているはず
-echo "現在のコンテナ内ディレクトリ: $(pwd)" # 通常はコンテナのルート /
+    # codebertnt_runner.py を実行
+    echo "    Executing codebertnt_runner.py for ${TARGET_FILE_IN_REPO_ITEM}..."
+    set -x
+    "${PYTHON_EXECUTABLE}" "${CODEBERT_RUNNER_FULL_PATH}" \
+        -repo_path "${ARG_PROJECT_REPO_IN_CONTAINER}" \
+        -target_classes "${TARGET_FILE_IN_REPO_ITEM}" \
+        -java_home "${ARG_JAVA_HOME}" \
+        -output_dir "${ITEM_SPECIFIC_OUTPUT_DIR}" \
+        -force_reload "False" \
+	-cosine "False" \
+    RUNNER_EXIT_CODE=$?
+    set +x
+    
+    if [ ${RUNNER_EXIT_CODE} -ne 0 ]; then
+        echo "    警告: アイテム ${OUTPUT_IDENTIFIER_ITEM} の処理でエラー (codebertnt_runner.py 終了コード ${RUNNER_EXIT_CODE})"
+    else
+        echo "    アイテム ${OUTPUT_IDENTIFIER_ITEM} 処理完了。"
+    fi
 
-# デバッグ用にリポジトリパスのリストを表示
-echo "コンテナ内: リポジトリパス (${ARG_REPO_PATH}) の内容:"
-ls -la "${ARG_REPO_PATH}"
+done < "${SORTED_FILTERED_TASKS_FILE}" # ソート済みの、このプロジェクト専用のタスクリストを読む
 
-set -x # 実行するコマンドをログに出力する
-
-"${PYTHON_EXECUTABLE}" "${CODEBERT_RUNNER_FULL_PATH}" \
-    -repo_path "${ARG_REPO_PATH}" \
-    -target_classes "${ARG_TARGET_CLASSES_RELATIVE_PATH}" \
-    -java_home "${ARG_JAVA_HOME}" \
-    -output_dir "${ARG_OUTPUT_DIR}" \
-    -force_reload "${FORCE_RELOAD}" \
-    -cosine "${COSINE_LOGIC}" \
-    # -all_lines "True" # codebertnt_runner.py がこの引数を受け付ける場合、適切に設定
-    # -project_name "${PROJECT_NAME_OWNER_REPO}" # Slurmスクリプトから追加で引数として渡す必要あり
-    # -max_processes "1" # コンテナ内では通常1プロセス (Slurmのcpus-per-taskに応じて調整)
-
-RUNNER_EXIT_CODE=$?
-set +x
-
-echo "-----------------------------------------------------"
-if [ ${RUNNER_EXIT_CODE} -ne 0 ]; then
-    echo "エラー(コンテナ内): codebertnt_runner.py の実行が失敗しました。終了コード: ${RUNNER_EXIT_CODE}"
-else
-    echo "コンテナ内: codebertnt_runner.py は正常に終了しました。"
-fi
-echo "Timestamp: $(date)"
-echo "--- Task inside Singularity container finished ---"
-echo "-----------------------------------------------------"
-
-exit ${RUNNER_EXIT_CODE}
+rm -f "${FILTERED_PROJECT_TASKS_FILE}" "${SORTED_FILTERED_TASKS_FILE}" # 一時ファイル削除
+echo "--- Project Task Finished in Container (Project: ${ARG_CURRENT_PROJECT_NAME}) ---"
+exit 0 # プロジェクト全体の処理としては正常終了 (個々のアイテムの成否はログで)
