@@ -4,7 +4,7 @@
 #SBATCH --job-name=codebert_nt_project_batch # ジョブ名
 #SBATCH --output=logs/project_output_%A_%a.out # 標準出力ログの絶対パス
 #SBATCH --error=error/project_error_%A_%a.err  # 標準エラーログの絶対パス
-#SBATCH --array=0-567%70 # ★重要★ project_list.txt の (総行数 - 1) に必ず調整してください (例: 460プロジェクトなら0-459)
+#SBATCH --array=0-567%30 # ★重要★ project_list.txt の (総行数 - 1) に必ず調整してください (例: 460プロジェクトなら0-459)
 #SBATCH --time=2-04:00:00      # 1プロジェクトあたりの最大実行時間 - ★プロジェクト内のタスク数に応じて要調整★
 #SBATCH --partition=ocigpu1a10_long  # ★NAISTクラスタの適切な本番用パーティション名に変更してください★
 #SBATCH --ntasks=1             # 1配列タスクあたり1つのMPIタスク (通常このまま)
@@ -22,7 +22,7 @@ PROJECT_ROOT_DIR="/work/kosei-ho/CodeBERT_naruralness/CodeBERT-nt"
 SINGULARITY_IMAGE_PATH="${PROJECT_ROOT_DIR}/codebert-nt.sif"
 
 # 各Slurmタスクが処理するプロジェクトの情報が書かれたファイル (プロジェクト名, リポジトリURL, 参照パス)
-PROJECT_LIST_FILE="${PROJECT_ROOT_DIR}/data/processed/project_list.txt" # ★このファイルが存在することを確認★
+PROJECT_LIST_FILE="${PROJECT_ROOT_DIR}/project_list.txt" # ★このファイルが存在することを確認★
 
 # コンテナ内で処理される個々のタスク情報が書かれた、ソート済みの完全なリスト
 # (project_name, commit_id, target_file, output_id, repo_url, ref_path の形式を想定)
@@ -41,6 +41,8 @@ CONTAINER_PROJECT_REPO_MOUNT_POINT="/mnt/repo"  # プロジェクトのGitリポ
 CONTAINER_ORIGINAL_TASKS_LIST_MOUNT_POINT="/mnt/original_sorted_tasks.list" # 元のタスクリストのマウント先
 CONTAINER_OUTPUT_BASE_MOUNT_POINT="/mnt/output_project_base" # このプロジェクトの出力ベース
 CONTAINER_APP_SCRIPT_MOUNT_POINT="/mnt/cluster_script/run_codebertnt_in_container.sh"
+
+export PYTHONPATH="$PWD/cbnt_dependencies/commons:$PWD/cbnt_dependencies/cbnt:/app:$PYTHONPATH"
 
 CONTAINER_APP_SCRIPT_PATH="/app/run_codebertnt_in_container.sh" # Singularityイメージ内の実行スクリプト
 CONTAINER_JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64" # ★Singularityイメージ内の実際のJDKパスに合わせる★
@@ -70,8 +72,7 @@ echo "Required host directories checked/created."
 
 # Singularityモジュールのロード
 echo "Loading Singularity module..."
-module purge
-module load singularity/3.8.7 # ★NAISTクラスタの利用可能なSingularityバージョンに合わせてください★
+module load singularity # ★NAISTクラスタの利用可能なSingularityバージョンに合わせてください★
 echo "Singularity module load attempt finished."
 echo "PATH after module load: $PATH"
 echo "Which singularity: $(which singularity)"

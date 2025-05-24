@@ -85,7 +85,8 @@ while IFS=',' read -r _PROJECT_NAME_ITEM COMMIT_ID_ITEM TARGET_FILE_IN_REPO_ITEM
         -java_home "${ARG_JAVA_HOME}" \
         -output_dir "${ITEM_SPECIFIC_OUTPUT_DIR}" \
         -force_reload "False" \
-	-cosine "False" \
+	-cosine "False" 
+
     RUNNER_EXIT_CODE=$?
     set +x
     
