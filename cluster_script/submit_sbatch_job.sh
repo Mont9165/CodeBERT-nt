@@ -2,13 +2,13 @@
 
 # --- SBATCH Directives ---
 #SBATCH --job-name=codebert_nt_project_batch # ジョブ名
-#SBATCH --output=/work/kosei-ho/CodeBERT_naruralness/CodeBERT-nt/logs/project_output_%A_%a.out # 標準出力ログの絶対パス
-#SBATCH --error=/work/kosei-ho/CodeBERT_naruralness/CodeBERT-nt/logs/project_error_%A_%a.err  # 標準エラーログの絶対パス
-#SBATCH --array=0-567%100 # ★重要★ project_list.txt の (総行数 - 1) に必ず調整してください (例: 460プロジェクトなら0-459)
-#SBATCH --time=0-10:00:00      # 1プロジェクトあたりの最大実行時間 - ★プロジェクト内のタスク数に応じて要調整★
-#SBATCH --partition=azuregpu1h100_long  # ★NAISTクラスタの適切な本番用パーティション名に変更してください★
+#SBATCH --output=logs/project_output_%A_%a.out # 標準出力ログの絶対パス
+#SBATCH --error=error/project_error_%A_%a.err  # 標準エラーログの絶対パス
+#SBATCH --array=0-567%70 # ★重要★ project_list.txt の (総行数 - 1) に必ず調整してください (例: 460プロジェクトなら0-459)
+#SBATCH --time=2-04:00:00      # 1プロジェクトあたりの最大実行時間 - ★プロジェクト内のタスク数に応じて要調整★
+#SBATCH --partition=ocigpu1a10_long  # ★NAISTクラスタの適切な本番用パーティション名に変更してください★
 #SBATCH --ntasks=1             # 1配列タスクあたり1つのMPIタスク (通常このまま)
-#SBATCH --cpus-per-task=4      # ★1プロジェクト処理に必要なCPUコア数。コンテナ内スクリプトの並列度も考慮して調整★
+#SBATCH --cpus-per-task=2      # ★1プロジェクト処理に必要なCPUコア数。コンテナ内スクリプトの並列度も考慮して調整★
 #SBATCH --mem=32G              # ★1プロジェクト処理に必要なメモリ量。プロジェクト内の最大ファイル数やサイズを考慮して調整★
 ##SBATCH --gres=gpu:1          # GPUを使用する場合にコメント解除し、必要なGPU数と種類を指定
 
@@ -34,10 +34,13 @@ HOST_TEMP_WORK_BASE_DIR="/work/kosei-ho/scratch/codebert_project_work_final" # �
 # 各プロジェクトの最終出力ディレクトリのベース
 HOST_FINAL_OUTPUT_BASE_DIR="${PROJECT_ROOT_DIR}/results_project_batch_final" # ★必要なら名前変更★
 
+HOST_APP_SCRIPT_PATH="${PROJECT_ROOT_DIR}/cluster_script/run_codebertnt_in_container.sh" 
+
 # --- コンテナ内パス設定 ---
 CONTAINER_PROJECT_REPO_MOUNT_POINT="/mnt/repo"  # プロジェクトのGitリポジトリのマウント先
 CONTAINER_ORIGINAL_TASKS_LIST_MOUNT_POINT="/mnt/original_sorted_tasks.list" # 元のタスクリストのマウント先
 CONTAINER_OUTPUT_BASE_MOUNT_POINT="/mnt/output_project_base" # このプロジェクトの出力ベース
+CONTAINER_APP_SCRIPT_MOUNT_POINT="/mnt/cluster_script/run_codebertnt_in_container.sh"
 
 CONTAINER_APP_SCRIPT_PATH="/app/run_codebertnt_in_container.sh" # Singularityイメージ内の実行スクリプト
 CONTAINER_JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64" # ★Singularityイメージ内の実際のJDKパスに合わせる★
@@ -168,6 +171,8 @@ SINGULARITY_EXEC_OPTS+="--bind ${ACTUAL_GIT_REPO_PATH_ON_HOST}:${CONTAINER_PROJE
 SINGULARITY_EXEC_OPTS+="--bind ${HOST_PROJECT_FINAL_OUTPUT_DIR}:${CONTAINER_OUTPUT_BASE_MOUNT_POINT}:rw "
 SINGULARITY_EXEC_OPTS+="--bind ${ORIGINAL_SORTED_TASKS_FILE_ON_HOST}:${CONTAINER_ORIGINAL_TASKS_LIST_MOUNT_POINT}:ro "
 SINGULARITY_EXEC_OPTS+="--bind /etc/passwd:/etc/passwd:ro --bind /etc/group:/group:ro " # /etc/group も :ro
+SINGULARITY_EXEC_OPTS+="--bind ${HOST_APP_SCRIPT_PATH}:${CONTAINER_APP_SCRIPT_MOUNT_POINT}:ro " 
+
 
 # コンテナ内実行スクリプトに渡す引数
 CMD_ARGS=(
@@ -182,7 +187,7 @@ CMD_ARGS=(
 echo "実行コマンド: singularity exec ${SINGULARITY_EXEC_OPTS} ${SINGULARITY_IMAGE_PATH} bash ${CONTAINER_APP_SCRIPT_PATH} ${CMD_ARGS[*]}"
 
 singularity exec ${SINGULARITY_EXEC_OPTS} "${SINGULARITY_IMAGE_PATH}" \
-    bash "${CONTAINER_APP_SCRIPT_PATH}" "${CMD_ARGS[@]}"
+    bash "${CONTAINER_APP_SCRIPT_MOUNT_POINT}" "${CMD_ARGS[@]}"
 
 SINGULARITY_EXIT_CODE=$?
 echo "Singularityコンテナの実行が終了しました。終了コード: ${SINGULARITY_EXIT_CODE}"
